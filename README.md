@@ -27,7 +27,7 @@ torch==2.6.0
 ### 安装
 
 ```bash
-git clone https://github.com/Jiaulo/TimeMixer-ME.git
+git clone https://github.com/mimanchi-dongze/TimeMixer-ME.git
 cd TimeMixer-ME
 pip install -r requirements.txt
 ```
