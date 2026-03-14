@@ -2,7 +2,9 @@ import numpy as np
 
 
 def RSE(pred, true):
-    return np.sqrt(np.sum((true - pred) ** 2)) / np.sqrt(np.sum((true - true.mean()) ** 2))
+    return np.sqrt(np.sum((true - pred) ** 2)) / np.sqrt(
+        np.sum((true - true.mean()) ** 2)
+    )
 
 
 def CORR(pred, true):
@@ -30,7 +32,9 @@ def MAPE(pred, true):
 
 
 def MSPE(pred, true):
-    return np.mean(np.square((pred - true) / true))
+    mspe = np.square((pred - true) / (true + 1e-8))
+    mspe = np.where(mspe > 25, 0, mspe)
+    return np.mean(mspe)
 
 
 def metric(pred, true):
