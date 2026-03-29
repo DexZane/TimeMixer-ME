@@ -38,6 +38,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             criterion = nn.MSELoss()
         return criterion
 
+    def _extract_outputs(self, model_outputs):
+        if self.args.output_attention and isinstance(model_outputs, (tuple, list)):
+            return model_outputs[0]
+        return model_outputs
+
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
@@ -62,15 +67,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if self.args.output_attention:
-                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-                        else:
-                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        model_outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        outputs = self._extract_outputs(model_outputs)
                 else:
-                    if self.args.output_attention:
-                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-                    else:
-                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    model_outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    outputs = self._extract_outputs(model_outputs)
                 f_dim = -1 if self.args.features == 'MS' else 0
 
                 pred = outputs[:, -self.args.pred_len:, f_dim:].detach()
@@ -149,10 +150,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if self.args.output_attention:
-                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-                        else:
-                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        model_outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        outputs = self._extract_outputs(model_outputs)
 
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -160,10 +159,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         loss = criterion(outputs, batch_y)
                         train_loss.append(loss.item())
                 else:
-                    if self.args.output_attention:
-                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-                    else:
-                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    model_outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    outputs = self._extract_outputs(model_outputs)
 
                     f_dim = -1 if self.args.features == 'MS' else 0
 
@@ -249,16 +246,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 # encoder - decoder
                 if self.args.use_amp:
                     with torch.cuda.amp.autocast():
-                        if self.args.output_attention:
-                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-                        else:
-                            outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        model_outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        outputs = self._extract_outputs(model_outputs)
                 else:
-                    if self.args.output_attention:
-                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-
-                    else:
-                        outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    model_outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    outputs = self._extract_outputs(model_outputs)
 
                 f_dim = -1 if self.args.features == 'MS' else 0
 

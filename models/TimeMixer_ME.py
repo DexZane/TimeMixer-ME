@@ -131,9 +131,10 @@ class AnyVariateAttention(nn.Module):
         self.output_projection = nn.Linear(configs.d_model, configs.d_model)
         self.dropout = nn.Dropout(configs.dropout)
 
-    def forward(self, x):
+    def forward(self, x, return_attention=False):
         """x: [batch_size, seq_len, d_model]"""
         x = self.layer_norm(x)
+        attention_weights = None
 
         if self.channel_independence == 1:
             B_N, T, D = x.shape
@@ -171,6 +172,8 @@ class AnyVariateAttention(nn.Module):
         output = self.output_projection(output)
         output = output + x
 
+        if return_attention:
+            return output, attention_weights
         return output
 
 
@@ -178,6 +181,8 @@ class MTMEM(nn.Module):
     def __init__(self, configs):
         super(MTMEM, self).__init__()
         self.d_model = configs.d_model
+        self.causal_levels = max(1, int(configs.causal_levels))
+        valid_heads = self._get_valid_num_heads(configs.d_model, self.causal_levels)
 
         # 短期记忆单元
         self.short_term_memory = nn.ModuleDict(
@@ -190,7 +195,7 @@ class MTMEM(nn.Module):
                     groups=configs.d_model,
                 ),
                 "attention": nn.MultiheadAttention(
-                    configs.d_model, num_heads=4, dropout=configs.dropout
+                    configs.d_model, num_heads=valid_heads, dropout=configs.dropout
                 ),
             }
         )
@@ -237,16 +242,6 @@ class MTMEM(nn.Module):
         )
 
         # 周期性模式检测器
-        self.periodicity_detector = nn.Sequential(
-            nn.Conv1d(
-                configs.d_model,
-                configs.d_model,
-                kernel_size=7,
-                padding=3,
-                groups=configs.d_model,
-            ),
-            nn.GELU(),
-        )
 
         # 周期性模式检测器
         self.periodicity_detector = nn.Sequential(
@@ -258,8 +253,14 @@ class MTMEM(nn.Module):
                 groups=configs.d_model,
             ),
             nn.GELU(),
-            nn.AdaptiveAvgPool1d(1),
         )
+
+    @staticmethod
+    def _get_valid_num_heads(d_model, preferred_heads):
+        for heads in range(min(preferred_heads, d_model), 0, -1):
+            if d_model % heads == 0:
+                return heads
+        return 1
 
     def forward(self, x):
         B, T, D = x.size()
@@ -355,13 +356,24 @@ class PastDecomposableMixing(nn.Module):
         # MTMEM模块的初始化
         self.mtmem = MTMEM(configs)
 
-    def forward(self, x_list):
+    def forward(self, x_list, return_attention=False):
         length_list = []
         for x in x_list:
             _, T, _ = x.size()
             length_list.append(T)
 
-        x_list = [self.mtmem(self.any_variate_attention(x)) for x in x_list]
+        attn_weights_list = []
+        processed_x_list = []
+        for x in x_list:
+            if return_attention:
+                attn_out, attn_weights = self.any_variate_attention(
+                    x, return_attention=True
+                )
+                attn_weights_list.append(attn_weights)
+            else:
+                attn_out = self.any_variate_attention(x)
+            processed_x_list.append(self.mtmem(attn_out))
+        x_list = processed_x_list
 
         # Decompose to obtain the season and trend
         season_list = []
@@ -387,6 +399,8 @@ class PastDecomposableMixing(nn.Module):
             if self.channel_independence:
                 out = ori + self.out_cross_layer(out)
             out_list.append(out[:, :length, :])
+        if return_attention:
+            return out_list, attn_weights_list
         return out_list
 
 
@@ -606,14 +620,23 @@ class Model(nn.Module):
                 enc_out_list.append(enc_out)
 
         # Past Decomposable Mixing as encoder for past
+        all_attn_weights = []
         for i in range(self.layer):
-            enc_out_list = self.pdm_blocks[i](enc_out_list)
+            if self.configs.output_attention:
+                enc_out_list, block_attn_weights = self.pdm_blocks[i](
+                    enc_out_list, return_attention=True
+                )
+                all_attn_weights.append(block_attn_weights)
+            else:
+                enc_out_list = self.pdm_blocks[i](enc_out_list)
 
         # Future Multipredictor Mixing as decoder for future
         dec_out_list = self.future_multi_mixing(enc_out_list, x_list)
 
         dec_out = torch.stack(dec_out_list, dim=-1).sum(-1)
         dec_out = self.normalize_layers[0](dec_out, "denorm")
+        if self.configs.output_attention:
+            return dec_out, all_attn_weights
         return dec_out
 
     def future_multi_mixing(self, enc_out_list, x_list):
