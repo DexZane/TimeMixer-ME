@@ -43,6 +43,53 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             return model_outputs[0]
         return model_outputs
 
+    def _apply_train_robust_augmentation(self, batch_x):
+        if not getattr(self.args, 'robust_train_aug', 0):
+            return batch_x
+
+        aug_x = batch_x
+        missing_rate = float(getattr(self.args, 'aug_missing_rate', 0.0))
+        noise_std = float(getattr(self.args, 'aug_noise_std', 0.0))
+        fill_method = getattr(self.args, 'aug_missing_fill', 'zero')
+        missing_mode = getattr(self.args, 'aug_missing_mode', 'random')
+        block_len = max(1, int(getattr(self.args, 'aug_block_len', 8)))
+        channel_dropout_rate = float(getattr(self.args, 'aug_channel_dropout_rate', 0.0))
+
+        if missing_rate > 0.0:
+            keep_mask = torch.ones_like(aug_x)
+            if missing_mode in ['random', 'mixed']:
+                random_keep_mask = (torch.rand_like(aug_x) > missing_rate).float()
+                keep_mask = keep_mask * random_keep_mask
+
+            if missing_mode in ['block', 'mixed']:
+                bsz, seq_len, channels = aug_x.shape
+                block_mask = torch.ones_like(aug_x)
+                num_blocks = max(1, int(np.ceil((seq_len * missing_rate) / float(block_len))))
+                for b in range(bsz):
+                    for c in range(channels):
+                        for _ in range(num_blocks):
+                            start = torch.randint(0, seq_len, (1,), device=aug_x.device).item()
+                            end = min(seq_len, start + block_len)
+                            block_mask[b, start:end, c] = 0.0
+                keep_mask = keep_mask * block_mask
+
+            if channel_dropout_rate > 0.0:
+                channel_keep = (
+                    torch.rand((aug_x.size(0), 1, aug_x.size(2)), device=aug_x.device) > channel_dropout_rate
+                ).float()
+                keep_mask = keep_mask * channel_keep
+
+            if fill_method == 'mean':
+                fill_values = aug_x.mean(dim=1, keepdim=True)
+            else:
+                fill_values = torch.zeros_like(aug_x)
+            aug_x = aug_x * keep_mask + fill_values * (1.0 - keep_mask)
+
+        if noise_std > 0.0:
+            aug_x = aug_x + torch.randn_like(aug_x) * noise_std
+
+        return aug_x
+
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
@@ -133,6 +180,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
+                batch_x = self._apply_train_robust_augmentation(batch_x)
 
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)

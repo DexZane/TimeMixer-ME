@@ -116,3 +116,127 @@ python run.py \
 ## 📄 许可证
 
 本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE)
+
+## Explainability (SHAP)
+
+You can run SHAP-based feature attribution for `long_term_forecast` checkpoints:
+
+```bash
+python scripts/explainability/shap_forecast_explain.py \
+  --checkpoint ./checkpoints/<your_setting>/checkpoint.pth \
+  --data custom \
+  --root_path ./dataset/weather/ \
+  --data_path weather.csv \
+  --features M \
+  --seq_len 96 \
+  --pred_len 96 \
+  --enc_in 21 \
+  --c_out 21 \
+  --background_size 16 \
+  --explain_size 16 \
+  --pred_index 0 \
+  --feature_index 0 \
+  --output_dir ./results/shap_explain/weather
+```
+
+Outputs:
+- `feature_importance.csv`: channel-level mean absolute SHAP values
+- `feature_importance_topk.png`: top-k feature importance plot
+- `shap_values.npy`: raw SHAP tensor `[batch, seq_len, features]`
+- `meta.json`: run metadata
+
+### Attention Explainability
+
+You can also extract cross-variate attention maps (requires checkpoint from the same model config):
+
+```bash
+python scripts/explainability/attention_forecast_explain.py \
+  --checkpoint ./checkpoints/<your_setting>/checkpoint.pth \
+  --data custom \
+  --root_path ./dataset/weather/ \
+  --data_path weather.csv \
+  --features M \
+  --seq_len 96 \
+  --pred_len 96 \
+  --enc_in 21 \
+  --c_out 21 \
+  --channel_independence 1 \
+  --output_dir ./results/attention_explain/weather
+```
+
+Outputs:
+- `attn_layer*_scale*.npy/.png`: per-layer per-scale attention matrix and heatmap
+- `attn_layer*_mean.npy/.png`: mean attention per layer
+- `attn_global_mean.npy/.png`: global mean attention across layers/scales
+- `attention_summary.json`: top attention feature pairs and summary stats
+
+## Robust Training Augmentation (Missing + Noise)
+
+To improve robustness to missing values and noisy observations, you can enable train-time input augmentation:
+
+```bash
+python run.py \
+  --task_name long_term_forecast \
+  --is_training 1 \
+  --model TimeMixer_ME \
+  --data custom \
+  --root_path ./dataset/weather/ \
+  --data_path weather.csv \
+  --features M \
+  --seq_len 96 \
+  --pred_len 96 \
+  --robust_train_aug 1 \
+  --aug_missing_rate 0.1 \
+  --aug_noise_std 0.03 \
+  --aug_missing_fill mean \
+  --aug_missing_mode mixed \
+  --aug_block_len 12 \
+  --aug_channel_dropout_rate 0.05
+```
+
+Arguments:
+- `robust_train_aug`: enable (`1`) / disable (`0`) augmentation (default `0`)
+- `aug_missing_rate`: random masking ratio on encoder input during training (default `0.0`)
+- `aug_noise_std`: Gaussian noise std added to encoder input during training (default `0.0`)
+- `aug_missing_fill`: filling strategy for masked values, `zero` or `mean` (default `zero`)
+- `aug_missing_mode`: missing pattern type, `random`, `block`, or `mixed` (default `random`)
+- `aug_block_len`: contiguous missing block length when using block/mixed mode (default `8`)
+- `aug_channel_dropout_rate`: channel-wise dropout ratio to simulate sensor-level outage (default `0.0`)
+
+### Robustness Ablation Script (PowerShell)
+
+Run one-click ablation for `baseline / random / block / mixed` under the same base config:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\ablation\run_robustness_ablation.ps1 `
+  -RootPath ./dataset/weather/ `
+  -DataPath weather.csv `
+  -PredLens 96,192,336,720 `
+  -MissingRate 0.1 `
+  -NoiseStd 0.03 `
+  -BlockLen 12 `
+  -ChannelDropoutRate 0.05
+```
+
+Dry run (print commands only):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\ablation\run_robustness_ablation.ps1 -DryRun
+```
+
+### Robustness Ablation Result Summary
+
+After experiments finish, summarize all `metrics.npy` into CSV/Markdown tables:
+
+```bash
+python scripts/ablation/summarize_robustness_ablation.py \
+  --results_root ./results \
+  --output_dir ./results/ablation_summary
+```
+
+Outputs:
+- `robustness_ablation_raw.csv`: one row per setting
+- `robustness_ablation_mse.csv`: pivot table (`pred_len x mode`) for MSE
+- `robustness_ablation_mae.csv`: pivot table (`pred_len x mode`) for MAE
+- `robustness_ablation_rmse.csv`: pivot table (`pred_len x mode`) for RMSE
+- `robustness_ablation_summary.md`: markdown tables (MSE/MAE/RMSE)

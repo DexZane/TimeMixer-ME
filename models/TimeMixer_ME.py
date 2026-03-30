@@ -387,9 +387,14 @@ class PastDecomposableMixing(nn.Module):
             trend_list.append(trend.permute(0, 2, 1))
 
         # bottom-up season mixing
-        out_season_list = self.mixing_multi_scale_season(season_list)
-        # top-down trend mixing
-        out_trend_list = self.mixing_multi_scale_trend(trend_list)
+        # down_sampling_layers=0 yields a single scale; skip cross-scale mixing safely.
+        if len(season_list) == 1:
+            out_season_list = [season_list[0].permute(0, 2, 1)]
+            out_trend_list = [trend_list[0].permute(0, 2, 1)]
+        else:
+            out_season_list = self.mixing_multi_scale_season(season_list)
+            # top-down trend mixing
+            out_trend_list = self.mixing_multi_scale_trend(trend_list)
 
         out_list = []
         for ori, out_season, out_trend, length in zip(

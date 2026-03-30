@@ -77,7 +77,7 @@ parser.add_argument('--use_future_temporal_feature', type=int, default=0,
 parser.add_argument('--mask_rate', type=float, default=0.25, help='mask ratio')
 
 # anomaly detection task
-parser.add_argument('--anomaly_ratio', type=float, default=0.25, help='prior anomaly ratio (%)')
+parser.add_argument('--anomaly_ratio', type=float, default=0.25, help='prior anomaly ratio (percent)')
 
 # optimization
 parser.add_argument('--num_workers', type=int, default=0, help='data loader num workers')
@@ -92,6 +92,20 @@ parser.add_argument('--lradj', type=str, default='TST', help='adjust learning ra
 parser.add_argument('--pct_start', type=float, default=0.2, help='pct_start')
 parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)
 parser.add_argument('--comment', type=str, default='none', help='com')
+parser.add_argument('--robust_train_aug', type=int, default=0,
+                    help='enable train-time robustness augmentation; 0:off 1:on')
+parser.add_argument('--aug_missing_rate', type=float, default=0.0,
+                    help='random missing ratio applied to encoder input during training')
+parser.add_argument('--aug_noise_std', type=float, default=0.0,
+                    help='gaussian noise std added to encoder input during training')
+parser.add_argument('--aug_missing_fill', type=str, default='zero', choices=['zero', 'mean'],
+                    help='fill method for simulated missing values')
+parser.add_argument('--aug_missing_mode', type=str, default='random', choices=['random', 'block', 'mixed'],
+                    help='missing pattern mode for training augmentation')
+parser.add_argument('--aug_block_len', type=int, default=8,
+                    help='block length when aug_missing_mode includes block')
+parser.add_argument('--aug_channel_dropout_rate', type=float, default=0.0,
+                    help='channel-wise dropout ratio on encoder input during training')
 
 # GPU
 parser.add_argument('--use_gpu', type=bool, default=True, help='use gpu')
