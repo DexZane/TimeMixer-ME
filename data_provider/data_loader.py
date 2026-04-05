@@ -12,6 +12,12 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+def _split_train_validation(data, val_ratio=0.2):
+    split_idx = max(1, int(len(data) * (1 - val_ratio)))
+    split_idx = min(split_idx, len(data) - 1)
+    return data[:split_idx], data[split_idx:]
+
+
 class Dataset_ETT_hour(Dataset):
     def __init__(self, root_path, flag='train', size=None,
                  features='S', data_path='ETTh1.csv',
@@ -304,8 +310,7 @@ class PSMSegLoader(Dataset):
         test_data = test_data.values[:, 1:]
         test_data = np.nan_to_num(test_data)
         self.test = self.scaler.transform(test_data)
-        self.train = data
-        self.val = self.test
+        self.train, self.val = _split_train_validation(data)
         self.test_labels = pd.read_csv(os.path.join(root_path, 'test_label.csv')).values[:, 1:]
         print("test:", self.test.shape)
         print("train:", self.train.shape)
@@ -346,8 +351,7 @@ class MSLSegLoader(Dataset):
         data = self.scaler.transform(data)
         test_data = np.load(os.path.join(root_path, "MSL_test.npy"))
         self.test = self.scaler.transform(test_data)
-        self.train = data
-        self.val = self.test
+        self.train, self.val = _split_train_validation(data)
         self.test_labels = np.load(os.path.join(root_path, "MSL_test_label.npy"))
         print("test:", self.test.shape)
         print("train:", self.train.shape)
@@ -388,8 +392,7 @@ class SMAPSegLoader(Dataset):
         data = self.scaler.transform(data)
         test_data = np.load(os.path.join(root_path, "SMAP_test.npy"))
         self.test = self.scaler.transform(test_data)
-        self.train = data
-        self.val = self.test
+        self.train, self.val = _split_train_validation(data)
         self.test_labels = np.load(os.path.join(root_path, "SMAP_test_label.npy"))
         print("test:", self.test.shape)
         print("train:", self.train.shape)
@@ -477,9 +480,8 @@ class SWATSegLoader(Dataset):
         self.scaler.fit(train_data)
         train_data = self.scaler.transform(train_data)
         test_data = self.scaler.transform(test_data)
-        self.train = train_data
+        self.train, self.val = _split_train_validation(train_data)
         self.test = test_data
-        self.val = test_data
         self.test_labels = labels
         print("test:", self.test.shape)
         print("train:", self.train.shape)
@@ -553,7 +555,7 @@ class Dataset_PEMS(Dataset):
         data = total_data[self.set_type]
 
         if self.scale:
-            self.scaler.fit(data)
+            self.scaler.fit(train_data)
             data = self.scaler.transform(data)
 
         df = pd.DataFrame(data)

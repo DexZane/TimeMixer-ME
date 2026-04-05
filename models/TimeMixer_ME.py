@@ -17,12 +17,14 @@ class DFT_series_decomp(nn.Module):
         self.top_k = top_k
 
     def forward(self, x):
-        xf = torch.fft.rfft(x)
-        freq = abs(xf)
-        freq[0] = 0
-        top_k_freq, top_list = torch.topk(freq, self.top_k)
-        xf[freq <= top_k_freq.min()] = 0
-        x_season = torch.fft.irfft(xf)
+        xf = torch.fft.rfft(x, dim=1)
+        freq = torch.abs(xf)
+        freq[:, 0, :] = 0
+        top_k = min(self.top_k, freq.size(1))
+        top_k_freq, _ = torch.topk(freq, top_k, dim=1)
+        threshold = top_k_freq.min(dim=1, keepdim=True).values
+        xf = xf.masked_fill(freq < threshold, 0)
+        x_season = torch.fft.irfft(xf, n=x.size(1), dim=1)
         x_trend = x - x_season
         return x_season, x_trend
 
@@ -122,14 +124,31 @@ class AnyVariateAttention(nn.Module):
         self.d_model = configs.d_model
         self.channel_independence = configs.channel_independence
         self.N = configs.enc_in
+        self.n_heads = self._get_valid_num_heads(configs.d_model, configs.n_heads)
 
-        self.W_Q = nn.Linear(configs.d_model, configs.d_model)
-        self.W_K = nn.Linear(configs.d_model, configs.d_model)
-        self.W_V = nn.Linear(configs.d_model, configs.d_model)
+        self.cross_variate_attention = nn.MultiheadAttention(
+            configs.d_model,
+            num_heads=self.n_heads,
+            dropout=configs.dropout,
+            batch_first=True,
+        )
+        self.temporal_attention = nn.MultiheadAttention(
+            configs.d_model,
+            num_heads=self.n_heads,
+            dropout=configs.dropout,
+            batch_first=True,
+        )
 
         self.layer_norm = nn.LayerNorm(configs.d_model)
         self.output_projection = nn.Linear(configs.d_model, configs.d_model)
         self.dropout = nn.Dropout(configs.dropout)
+
+    @staticmethod
+    def _get_valid_num_heads(d_model, preferred_heads):
+        for heads in range(min(preferred_heads, d_model), 0, -1):
+            if d_model % heads == 0:
+                return heads
+        return 1
 
     def forward(self, x, return_attention=False):
         """x: [batch_size, seq_len, d_model]"""
@@ -141,35 +160,29 @@ class AnyVariateAttention(nn.Module):
             B = B_N // self.N
             N = self.N
 
-            # Reshape to [B, N, T, D] and permute to [B, T, N, D] for cross-variate attention
-            x_reshaped = x.view(B, N, T, D).permute(0, 2, 1, 3)
-
-            Q = self.W_Q(x_reshaped)
-            K = self.W_K(x_reshaped)
-            V = self.W_V(x_reshaped)
-
-            scale = math.sqrt(self.d_model)
-            attention_scores = torch.matmul(Q, K.transpose(-2, -1)) / scale
-            attention_weights = F.softmax(attention_scores, dim=-1)
-            attention_weights = self.dropout(attention_weights)
-
-            output = torch.matmul(attention_weights, V)
-
-            # Permute back to [B, N, T, D] and reshape to [B*N, T, D]
-            output = output.permute(0, 2, 1, 3).contiguous().view(B_N, T, D)
+            # Cross-variate attention is applied at each time step across variables.
+            x_reshaped = x.view(B, N, T, D).permute(0, 2, 1, 3).reshape(B * T, N, D)
+            output, attention_weights = self.cross_variate_attention(
+                x_reshaped,
+                x_reshaped,
+                x_reshaped,
+                need_weights=return_attention,
+                average_attn_weights=True,
+            )
+            output = output.view(B, T, N, D).permute(0, 2, 1, 3).contiguous().view(B_N, T, D)
+            if return_attention:
+                attention_weights = attention_weights.view(B, T, N, N)
         else:
-            Q = self.W_Q(x)
-            K = self.W_K(x)
-            V = self.W_V(x)
-
-            scale = math.sqrt(self.d_model)
-            attention_scores = torch.matmul(Q, K.transpose(-2, -1)) / scale
-            attention_weights = F.softmax(attention_scores, dim=-1)
-            attention_weights = self.dropout(attention_weights)
-
-            output = torch.matmul(attention_weights, V)
+            output, attention_weights = self.temporal_attention(
+                x,
+                x,
+                x,
+                need_weights=return_attention,
+                average_attn_weights=True,
+            )
 
         output = self.output_projection(output)
+        output = self.dropout(output)
         output = output + x
 
         if return_attention:
@@ -678,7 +691,9 @@ class Model(nn.Module):
 
     def classification(self, x_enc, x_mark_enc):
         x_enc, _ = self.__multi_scale_process_inputs(x_enc, None)
-        x_list = x_enc
+        x_list = []
+        for i, x in zip(range(len(x_enc)), x_enc):
+            x_list.append(self.normalize_layers[i](x, "norm"))
 
         # embedding
         enc_out_list = []

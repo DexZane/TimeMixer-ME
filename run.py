@@ -78,6 +78,8 @@ parser.add_argument('--mask_rate', type=float, default=0.25, help='mask ratio')
 
 # anomaly detection task
 parser.add_argument('--anomaly_ratio', type=float, default=0.25, help='prior anomaly ratio (percent)')
+parser.add_argument('--anomaly_adjustment', type=int, default=0,
+                    help='apply label-aware anomaly adjustment during evaluation; disabled by default')
 
 # optimization
 parser.add_argument('--num_workers', type=int, default=0, help='data loader num workers')
@@ -92,6 +94,10 @@ parser.add_argument('--lradj', type=str, default='TST', help='adjust learning ra
 parser.add_argument('--pct_start', type=float, default=0.2, help='pct_start')
 parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)
 parser.add_argument('--comment', type=str, default='none', help='com')
+parser.add_argument('--classification_val_ratio', type=float, default=0.2,
+                    help='validation ratio split from the train classification set when no explicit val split exists')
+parser.add_argument('--classification_split_seed', type=int, default=42,
+                    help='random seed used for classification train/val splitting')
 parser.add_argument('--robust_train_aug', type=int, default=0,
                     help='enable train-time robustness augmentation; 0:off 1:on')
 parser.add_argument('--aug_missing_rate', type=float, default=0.0,

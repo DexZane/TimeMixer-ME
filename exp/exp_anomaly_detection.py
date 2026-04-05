@@ -123,7 +123,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
 
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
                 epoch + 1, train_steps, train_loss, vali_loss, test_loss))
-            early_stopping(test_loss, self.model, path)
+            early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
@@ -133,16 +133,18 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
 
         best_model_path = path + '/' + 'checkpoint.pth'
-        self.model.load_state_dict(torch.load(best_model_path))
+        self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
 
         return self.model
 
     def test(self, setting, test=0):
         test_data, test_loader = self._get_data(flag='test')
         train_data, train_loader = self._get_data(flag='train')
+        vali_data, vali_loader = self._get_data(flag='val')
         if test:
             print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
+            self.model.load_state_dict(torch.load(os.path.join(self.args.checkpoints, setting, 'checkpoint.pth'),
+                                                  map_location=self.device))
 
         attens_energy = []
         folder_path = './test_results/' + setting + '/'
@@ -152,7 +154,7 @@ class Exp_Anomaly_Detection(Exp_Basic):
         self.model.eval()
         self.anomaly_criterion = nn.MSELoss(reduce=False)
 
-        # (1) stastic on the train set
+        # (1) statistic on the train/validation sets
         with torch.no_grad():
             for i, (batch_x, batch_y) in enumerate(train_loader):
                 batch_x = batch_x.float().to(self.device)
@@ -163,11 +165,17 @@ class Exp_Anomaly_Detection(Exp_Basic):
                 score = score.detach().cpu().numpy()
                 attens_energy.append(score)
 
-        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
-        train_energy = np.array(attens_energy)
+            for i, (batch_x, batch_y) in enumerate(vali_loader):
+                batch_x = batch_x.float().to(self.device)
+                outputs = self.model(batch_x, None, None, None)
+                score = torch.mean(self.anomaly_criterion(batch_x, outputs), dim=-1)
+                score = score.detach().cpu().numpy()
+                attens_energy.append(score)
 
-        # (2) find the threshold
-        attens_energy = []
+        threshold_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
+
+        # (2) find the threshold without looking at the test split
+        test_energy = []
         test_labels = []
         for i, (batch_x, batch_y) in enumerate(test_loader):
             batch_x = batch_x.float().to(self.device)
@@ -176,13 +184,11 @@ class Exp_Anomaly_Detection(Exp_Basic):
             # criterion
             score = torch.mean(self.anomaly_criterion(batch_x, outputs), dim=-1)
             score = score.detach().cpu().numpy()
-            attens_energy.append(score)
+            test_energy.append(score)
             test_labels.append(batch_y)
 
-        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
-        test_energy = np.array(attens_energy)
-        combined_energy = np.concatenate([train_energy, test_energy], axis=0)
-        threshold = np.percentile(combined_energy, 100 - self.args.anomaly_ratio)
+        test_energy = np.concatenate(test_energy, axis=0).reshape(-1)
+        threshold = np.percentile(threshold_energy, 100 - self.args.anomaly_ratio)
         print("Threshold :", threshold)
 
         # (3) evaluation on the test set
@@ -194,8 +200,9 @@ class Exp_Anomaly_Detection(Exp_Basic):
         print("pred:   ", pred.shape)
         print("gt:     ", gt.shape)
 
-        # (4) detection adjustment
-        gt, pred = adjustment(gt, pred)
+        # (4) optional detection adjustment for benchmark compatibility
+        if getattr(self.args, 'anomaly_adjustment', 0):
+            gt, pred = adjustment(gt, pred)
 
         pred = np.array(pred)
         gt = np.array(gt)

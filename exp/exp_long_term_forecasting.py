@@ -55,8 +55,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         block_len = max(1, int(getattr(self.args, 'aug_block_len', 8)))
         channel_dropout_rate = float(getattr(self.args, 'aug_channel_dropout_rate', 0.0))
 
+        keep_mask = torch.ones_like(aug_x)
         if missing_rate > 0.0:
-            keep_mask = torch.ones_like(aug_x)
             if missing_mode in ['random', 'mixed']:
                 random_keep_mask = (torch.rand_like(aug_x) > missing_rate).float()
                 keep_mask = keep_mask * random_keep_mask
@@ -73,12 +73,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             block_mask[b, start:end, c] = 0.0
                 keep_mask = keep_mask * block_mask
 
-            if channel_dropout_rate > 0.0:
-                channel_keep = (
-                    torch.rand((aug_x.size(0), 1, aug_x.size(2)), device=aug_x.device) > channel_dropout_rate
-                ).float()
-                keep_mask = keep_mask * channel_keep
+        if channel_dropout_rate > 0.0:
+            channel_keep = (
+                torch.rand((aug_x.size(0), 1, aug_x.size(2)), device=aug_x.device) > channel_dropout_rate
+            ).float()
+            keep_mask = keep_mask * channel_keep
 
+        if missing_rate > 0.0 or channel_dropout_rate > 0.0:
             if fill_method == 'mean':
                 fill_values = aug_x.mean(dim=1, keepdim=True)
             else:
@@ -255,7 +256,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
 
         best_model_path = path + '/' + 'checkpoint.pth'
-        self.model.load_state_dict(torch.load(best_model_path))
+        self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
 
         return self.model
 
@@ -263,7 +264,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         test_data, test_loader = self._get_data(flag='test')
         if test:
             print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
+            self.model.load_state_dict(torch.load(os.path.join(self.args.checkpoints, setting, 'checkpoint.pth'),
+                                                  map_location=self.device))
 
         checkpoints_path = './checkpoints/' + setting + '/'
         preds = []

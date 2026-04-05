@@ -19,12 +19,14 @@ class Exp_Classification(Exp_Basic):
 
     def _build_model(self):
         # model input depends on data
-        train_data, train_loader = self._get_data(flag="TRAIN")
-        test_data, test_loader = self._get_data(flag="TEST")
-        self.args.seq_len = max(train_data.max_seq_len, test_data.max_seq_len)
+        train_data, train_loader = self._get_data(flag="train")
+        val_data, val_loader = self._get_data(flag="val")
+        test_data, test_loader = self._get_data(flag="test")
+        self.args.seq_len = max(train_data.max_seq_len, val_data.max_seq_len, test_data.max_seq_len)
         self.args.pred_len = 0
         self.args.enc_in = train_data.feature_df.shape[1]
         self.args.num_class = len(train_data.class_names)
+        self.args.channel_independence = 0
         # model init
         model = self.model_dict[self.args.model].Model(self.args).float()
         if self.args.use_multi_gpu and self.args.use_gpu:
@@ -81,9 +83,9 @@ class Exp_Classification(Exp_Basic):
         return total_loss, accuracy
 
     def train(self, setting):
-        train_data, train_loader = self._get_data(flag="TRAIN")
-        vali_data, vali_loader = self._get_data(flag="TEST")
-        test_data, test_loader = self._get_data(flag="TEST")
+        train_data, train_loader = self._get_data(flag="train")
+        vali_data, vali_loader = self._get_data(flag="val")
+        test_data, test_loader = self._get_data(flag="test")
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -168,7 +170,7 @@ class Exp_Classification(Exp_Basic):
                     test_accuracy,
                 )
             )
-            early_stopping(-test_accuracy, self.model, path)
+            early_stopping(-val_accuracy, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
@@ -178,16 +180,17 @@ class Exp_Classification(Exp_Basic):
                 )
 
         best_model_path = path + "/" + "checkpoint.pth"
-        self.model.load_state_dict(torch.load(best_model_path))
+        self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
 
         return self.model
 
     def test(self, setting, test=0):
-        test_data, test_loader = self._get_data(flag="TEST")
+        test_data, test_loader = self._get_data(flag="test")
         if test:
             print("loading model")
             self.model.load_state_dict(
-                torch.load(os.path.join("./checkpoints/" + setting, "checkpoint.pth"))
+                torch.load(os.path.join(self.args.checkpoints, setting, "checkpoint.pth"),
+                           map_location=self.device)
             )
 
         preds = []
