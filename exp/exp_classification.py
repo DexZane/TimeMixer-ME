@@ -27,6 +27,9 @@ class Exp_Classification(Exp_Basic):
         self.args.enc_in = train_data.feature_df.shape[1]
         self.args.num_class = len(train_data.class_names)
         self.args.channel_independence = 0
+        # Variable-length classification is handled sample-wise without padding leakage.
+        # Disable fixed-length multi-scale temporal projection layers for this task.
+        self.args.down_sampling_layers = 0
         # model init
         model = self.model_dict[self.args.model].Model(self.args).float()
         if self.args.use_multi_gpu and self.args.use_gpu:
@@ -60,7 +63,7 @@ class Exp_Classification(Exp_Basic):
                 outputs = self.model(batch_x, padding_mask, None, None)
 
                 pred = outputs.detach()
-                loss = criterion(pred, label.long().squeeze())
+                loss = criterion(pred, label.long().view(-1))
                 total_loss.append(loss.item())
 
                 preds.append(outputs.detach())
@@ -123,7 +126,7 @@ class Exp_Classification(Exp_Basic):
                 label = label.to(self.device)
 
                 outputs = self.model(batch_x, padding_mask, None, None)
-                loss = criterion(outputs, label.long().squeeze(-1))
+                loss = criterion(outputs, label.long().view(-1))
                 train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:

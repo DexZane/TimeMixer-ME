@@ -513,9 +513,7 @@ class Model(nn.Module):
         if self.task_name == "classification":
             self.act = F.gelu
             self.dropout = nn.Dropout(configs.dropout)
-            self.projection = nn.Linear(
-                configs.d_model * configs.seq_len, configs.num_class
-            )
+            self.projection = nn.Linear(configs.d_model, configs.num_class)
 
     def out_projection(self, dec_out, i, out_res):
         dec_out = self.projection_layer(dec_out)
@@ -524,6 +522,21 @@ class Model(nn.Module):
         out_res = self.regression_layers[i](out_res).permute(0, 2, 1)
         dec_out = dec_out + out_res
         return dec_out
+
+    @staticmethod
+    def _expand_temporal_marks(x_mark, num_channels):
+        return x_mark.repeat_interleave(num_channels, dim=0)
+
+    @staticmethod
+    def _restore_channel_independent_output(dec_out, batch_size, num_channels):
+        time_steps = dec_out.size(1)
+        output_dim = dec_out.size(2)
+        return (
+            dec_out.reshape(batch_size, num_channels, time_steps, output_dim)
+            .permute(0, 2, 1, 3)
+            .contiguous()
+            .reshape(batch_size, time_steps, num_channels * output_dim)
+        )
 
     def pre_enc(self, x_list):
         if self.channel_independence == 1:
@@ -595,7 +608,7 @@ class Model(nn.Module):
         if self.use_future_temporal_feature:
             if self.channel_independence == 1:
                 B, T, N = x_enc.size()
-                x_mark_dec = x_mark_dec.repeat(N, 1, 1)
+                x_mark_dec = self._expand_temporal_marks(x_mark_dec, N)
                 self.x_mark_dec = self.enc_embedding(None, x_mark_dec)
             else:
                 self.x_mark_dec = self.enc_embedding(None, x_mark_dec)
@@ -611,7 +624,7 @@ class Model(nn.Module):
                 x = self.normalize_layers[i](x, "norm")
                 if self.channel_independence == 1:
                     x = x.permute(0, 2, 1).contiguous().reshape(B * N, T, 1)
-                    x_mark = x_mark.repeat(N, 1, 1)
+                    x_mark = self._expand_temporal_marks(x_mark, N)
                 x_list.append(x)
                 x_mark_list.append(x_mark)
         else:
@@ -671,7 +684,7 @@ class Model(nn.Module):
                 else:
                     dec_out = self.projection_layer(dec_out)
                 dec_out = (
-                    dec_out.reshape(-1, self.configs.c_out, self.pred_len)
+                    dec_out.reshape(-1, self.configs.enc_in, self.pred_len)
                     .permute(0, 2, 1)
                     .contiguous()
                 )
@@ -690,35 +703,46 @@ class Model(nn.Module):
         return dec_out_list
 
     def classification(self, x_enc, x_mark_enc):
-        x_enc, _ = self.__multi_scale_process_inputs(x_enc, None)
+        if x_mark_enc is None:
+            x_mark_enc = torch.ones(
+                x_enc.size(0), x_enc.size(1), device=x_enc.device, dtype=x_enc.dtype
+            )
+
+        logits = []
+        valid_lengths = x_mark_enc.sum(dim=1).long()
+        for sample_idx in range(x_enc.size(0)):
+            valid_len = int(valid_lengths[sample_idx].item())
+            valid_len = max(valid_len, 1)
+            logits.append(
+                self._classify_single_sample(
+                    x_enc[sample_idx : sample_idx + 1, :valid_len, :]
+                )
+            )
+        return torch.cat(logits, dim=0)
+
+    def _classify_single_sample(self, x_sample):
+        x_scales, _ = self.__multi_scale_process_inputs(x_sample, None)
         x_list = []
-        for i, x in zip(range(len(x_enc)), x_enc):
+        for i, x in zip(range(len(x_scales)), x_scales):
             x_list.append(self.normalize_layers[i](x, "norm"))
 
-        # embedding
         enc_out_list = []
         for x in x_list:
             enc_out = self.enc_embedding(x, None)  # [B,T,C]
             enc_out_list.append(enc_out)
 
-        # MultiScale-CrissCrossAttention  as encoder for past
         for i in range(self.layer):
             enc_out_list = self.pdm_blocks[i](enc_out_list)
 
         enc_out = enc_out_list[0]
-        # Output
-        # the output transformer encoder/decoder embeddings don't include non-linearity
         output = self.act(enc_out)
         output = self.dropout(output)
-        # zero-out padding embeddings
-        output = output * x_mark_enc.unsqueeze(-1)
-        # (batch_size, seq_length * d_model)
-        output = output.reshape(output.shape[0], -1)
-        output = self.projection(output)  # (batch_size, num_classes)
-        return output
+        pooled = output.mean(dim=1)
+        return self.projection(pooled)  # (1, num_classes)
 
     def anomaly_detection(self, x_enc):
         B, T, N = x_enc.size()
+        batch_size, num_channels = B, N
         x_enc, _ = self.__multi_scale_process_inputs(x_enc, None)
 
         x_list = []
@@ -744,25 +768,28 @@ class Model(nn.Module):
             enc_out_list = self.pdm_blocks[i](enc_out_list)
 
         dec_out = self.projection_layer(enc_out_list[0])
-        dec_out = (
-            dec_out.reshape(B, self.configs.c_out, -1).permute(0, 2, 1).contiguous()
-        )
+        if self.channel_independence == 1:
+            dec_out = self._restore_channel_independent_output(
+                dec_out, batch_size, num_channels
+            )
 
         dec_out = self.normalize_layers[0](dec_out, "denorm")
         return dec_out
 
     def imputation(self, x_enc, x_mark_enc, mask):
-        means = torch.sum(x_enc, dim=1) / torch.sum(mask == 1, dim=1)
+        valid_counts = torch.sum(mask == 1, dim=1).clamp_min(1)
+        means = torch.sum(x_enc, dim=1) / valid_counts
         means = means.unsqueeze(1).detach()
         x_enc = x_enc - means
         x_enc = x_enc.masked_fill(mask == 0, 0)
         stdev = torch.sqrt(
-            torch.sum(x_enc * x_enc, dim=1) / torch.sum(mask == 1, dim=1) + 1e-5
+            torch.sum(x_enc * x_enc, dim=1) / valid_counts + 1e-5
         )
         stdev = stdev.unsqueeze(1).detach()
         x_enc /= stdev
 
         B, T, N = x_enc.size()
+        batch_size, num_channels = B, N
         x_enc, x_mark_enc = self.__multi_scale_process_inputs(x_enc, x_mark_enc)
 
         x_list = []
@@ -772,8 +799,8 @@ class Model(nn.Module):
                 B, T, N = x.size()
                 if self.channel_independence == 1:
                     x = x.permute(0, 2, 1).contiguous().reshape(B * N, T, 1)
+                    x_mark = self._expand_temporal_marks(x_mark, N)
                 x_list.append(x)
-                x_mark = x_mark.repeat(N, 1, 1)
                 x_mark_list.append(x_mark)
         else:
             for i, x in zip(
@@ -787,21 +814,27 @@ class Model(nn.Module):
 
         # embedding
         enc_out_list = []
-        for x in x_list:
-            enc_out = self.enc_embedding(x, None)  # [B,T,C]
-            enc_out_list.append(enc_out)
+        if x_mark_enc is not None:
+            for x, x_mark in zip(x_list, x_mark_list):
+                enc_out = self.enc_embedding(x, x_mark)  # [B,T,C]
+                enc_out_list.append(enc_out)
+        else:
+            for x in x_list:
+                enc_out = self.enc_embedding(x, None)  # [B,T,C]
+                enc_out_list.append(enc_out)
 
         # MultiScale-CrissCrossAttention  as encoder for past
         for i in range(self.layer):
             enc_out_list = self.pdm_blocks[i](enc_out_list)
 
         dec_out = self.projection_layer(enc_out_list[0])
-        dec_out = (
-            dec_out.reshape(B, self.configs.c_out, -1).permute(0, 2, 1).contiguous()
-        )
+        if self.channel_independence == 1:
+            dec_out = self._restore_channel_independent_output(
+                dec_out, batch_size, num_channels
+            )
 
-        dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
-        dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.seq_len, 1))
+        dec_out = dec_out * stdev.expand(-1, dec_out.size(1), -1)
+        dec_out = dec_out + means.expand(-1, dec_out.size(1), -1)
         return dec_out
 
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):

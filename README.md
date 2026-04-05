@@ -145,6 +145,12 @@ Notes:
 - `target` is required when using `features=S` or `features=MS`
 - for `features=M`, all columns after `date` are treated as model inputs
 
+When using `features=MS`:
+
+- set `enc_in` to the full number of input variables
+- set `target` to the target column name in the CSV
+- the forecasting pipeline keeps full multivariate trajectories internally and selects the target channel at the loss / metric stage
+
 Default split for `custom` CSV datasets:
 
 - train: 70%
@@ -288,6 +294,8 @@ Notes:
 - for classification, `data` is still required by the CLI, but the actual split loading is driven by `task_name=classification` and files under `root_path`
 - `seq_len` will be overridden internally to the maximum sequence length in the loaded dataset
 - if there is no explicit validation split, the loader uses `--classification_val_ratio` and `--classification_split_seed`
+- variable-length samples are encoded on their valid time span only, then aggregated with temporal mean pooling
+- classification runs with `down_sampling_layers=0` internally
 
 ## Core Model Ideas
 
@@ -316,6 +324,8 @@ AnyVariateAttention supports two regimes:
 
 - `channel_independence=1`: cross-variate attention at each time step
 - `channel_independence=0`: temporal attention on the multivariate sequence directly
+
+For forecasting with `channel_independence=1`, the model predicts one trajectory per input variable and then applies task-specific channel selection when needed, such as `features=MS`.
 
 ## Important Arguments
 

@@ -145,6 +145,12 @@ date,feature_1,feature_2,...,target
 - 当 `features=S` 或 `features=MS` 时，需要指定 `target`
 - 当 `features=M` 时，`date` 之后的全部列都会作为输入特征
 
+当使用 `features=MS` 时：
+
+- `enc_in` 应设置为完整输入变量数
+- `target` 应设置为目标列名
+- 预测流程内部会保留完整的多变量轨迹，在 loss / metric 阶段再选择目标通道
+
 `custom` CSV 默认按以下比例切分：
 
 - train: 70%
@@ -288,6 +294,8 @@ python run.py \
 - 分类任务虽然仍然需要传 `--data`，但实际加载由 `task_name=classification` 和 `root_path` 下的文件决定
 - `seq_len` 会在运行时被数据集中最长序列长度覆盖
 - 如果没有显式验证集，将使用 `--classification_val_ratio` 和 `--classification_split_seed` 自动切分
+- 变长样本会按各自的有效时间段单独编码，再做时间维均值池化
+- 分类任务内部固定使用 `down_sampling_layers=0`
 
 ## 核心模型思路
 
@@ -316,6 +324,8 @@ AnyVariateAttention 有两种工作模式：
 
 - `channel_independence=1`：在每个时间步上做跨变量注意力
 - `channel_independence=0`：直接在多变量序列上做时间维注意力
+
+在 forecasting 中，如果使用 `channel_independence=1`，模型会先为每个输入变量生成一条预测轨迹，再按具体任务需要选择目标通道，例如 `features=MS`。
 
 ## 重要参数
 
@@ -508,4 +518,3 @@ python scripts/ablation/summarize_robustness_ablation.py \
 ## 许可证
 
 本项目采用 MIT License，详见 [LICENSE](LICENSE)。
-

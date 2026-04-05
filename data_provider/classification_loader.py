@@ -26,17 +26,34 @@ def _as_sequence_list(values) -> List[np.ndarray]:
     return sequences
 
 
-def _normalize_labels(labels) -> np.ndarray:
+def _prepare_labels(labels) -> np.ndarray:
     labels = np.asarray(labels)
     if labels.ndim > 1:
         labels = labels.reshape(-1)
-    if labels.dtype.kind in {"U", "S", "O"}:
-        unique = sorted(np.unique(labels).tolist())
-        mapping = {label: idx for idx, label in enumerate(unique)}
-        labels = np.asarray([mapping[label] for label in labels], dtype=np.int64)
-    else:
-        labels = labels.astype(np.int64)
     return labels
+
+
+def _build_label_mapping(*label_arrays):
+    flattened = []
+    for labels in label_arrays:
+        flattened.extend(_prepare_labels(labels).tolist())
+
+    if not flattened:
+        raise ValueError("Empty classification label set")
+
+    if all(np.isscalar(label) and isinstance(label, (int, float, np.integer, np.floating)) for label in flattened):
+        unique_labels = sorted(set(flattened))
+    else:
+        unique_labels = sorted(set(flattened), key=lambda item: str(item))
+
+    mapping = {label: idx for idx, label in enumerate(unique_labels)}
+    class_names = [str(label) for label in unique_labels]
+    return mapping, class_names
+
+
+def _encode_labels(labels, mapping) -> np.ndarray:
+    labels = _prepare_labels(labels)
+    return np.asarray([mapping[label] for label in labels.tolist()], dtype=np.int64)
 
 
 def _load_npz(root_path: str):
@@ -53,12 +70,12 @@ def _load_npz(root_path: str):
         for key_group in key_groups:
             if key_group[0] in keys and key_group[1] in keys and key_group[4] in keys and key_group[5] in keys:
                 return {
-                    "train": (_as_sequence_list(data[key_group[0]]), _normalize_labels(data[key_group[1]])),
+                    "train": (_as_sequence_list(data[key_group[0]]), _prepare_labels(data[key_group[1]])),
                     "val": (
                         _as_sequence_list(data[key_group[2]]),
-                        _normalize_labels(data[key_group[3]]),
+                        _prepare_labels(data[key_group[3]]),
                     ) if key_group[2] in keys and key_group[3] in keys else None,
-                    "test": (_as_sequence_list(data[key_group[4]]), _normalize_labels(data[key_group[5]])),
+                    "test": (_as_sequence_list(data[key_group[4]]), _prepare_labels(data[key_group[5]])),
                 }
         raise ValueError(f"Unsupported classification npz format in {path}")
     return None
@@ -78,7 +95,7 @@ def _load_npy_pairs(root_path: str):
             if os.path.exists(data_path) and os.path.exists(label_path):
                 data = np.load(data_path, allow_pickle=True)
                 labels = np.load(label_path, allow_pickle=True)
-                loaded[split] = (_as_sequence_list(data), _normalize_labels(labels))
+                loaded[split] = (_as_sequence_list(data), _prepare_labels(labels))
                 break
     if "train" in loaded and "test" in loaded:
         loaded.setdefault("val", None)
@@ -134,10 +151,12 @@ def load_classification_splits(root_path: str, val_ratio: float = 0.2, seed: int
         (train_x, train_y), val_split = _split_train_val(train_x, train_y, val_ratio=val_ratio, seed=seed)
 
     val_x, val_y = val_split
+    label_mapping, class_names = _build_label_mapping(train_y, val_y, test_y)
     return {
-        "train": (train_x, train_y),
-        "val": (val_x, val_y),
-        "test": (test_x, test_y),
+        "train": (train_x, _encode_labels(train_y, label_mapping)),
+        "val": (val_x, _encode_labels(val_y, label_mapping)),
+        "test": (test_x, _encode_labels(test_y, label_mapping)),
+        "class_names": class_names,
     }
 
 
@@ -150,8 +169,13 @@ class ClassificationDataset(Dataset):
         all_labels = np.concatenate([splits["train"][1], splits["val"][1], splits["test"][1]])
         num_features = self.samples[0].shape[-1]
         self.max_seq_len = max(sample.shape[0] for sample in self.samples)
+        self.global_max_seq_len = max(
+            max(sample.shape[0] for sample in splits["train"][0]),
+            max(sample.shape[0] for sample in splits["val"][0]),
+            max(sample.shape[0] for sample in splits["test"][0]),
+        )
         self.feature_df = np.zeros((1, num_features), dtype=np.float32)
-        self.class_names = [str(label) for label in sorted(np.unique(all_labels).tolist())]
+        self.class_names = splits["class_names"]
 
     def __len__(self):
         return len(self.labels)
