@@ -255,8 +255,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             else:
                 print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
 
-        best_model_path = path + '/' + 'checkpoint.pth'
-        self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
+        best_model_path = os.path.join(path, 'checkpoint.pth')
+        try:
+            self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
+        except FileNotFoundError:
+            print(f"警告: 未找到模型文件 {best_model_path}，使用当前训练的模型")
+        except Exception as e:
+            raise RuntimeError(f"加载模型失败: {best_model_path}, 错误: {e}")
 
         return self.model
 
@@ -264,13 +269,18 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         test_data, test_loader = self._get_data(flag='test')
         if test:
             print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join(self.args.checkpoints, setting, 'checkpoint.pth'),
-                                                  map_location=self.device))
+            checkpoint_path = os.path.join(self.args.checkpoints, setting, 'checkpoint.pth')
+            try:
+                self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
+            except FileNotFoundError:
+                raise FileNotFoundError(f"未找到模型文件: {checkpoint_path}")
+            except Exception as e:
+                raise RuntimeError(f"加载模型失败: {checkpoint_path}, 错误: {e}")
 
-        checkpoints_path = './checkpoints/' + setting + '/'
+        checkpoints_path = os.path.join('./checkpoints', setting)
         preds = []
         trues = []
-        folder_path = './test_results/' + setting + '/'
+        folder_path = os.path.join('./test_results', setting)
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
@@ -337,7 +347,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             trues = test_data.inverse_transform(trues.reshape(-1, C)).reshape(B, T, C)
 
         # result save
-        folder_path = './results/' + setting + '/'
+        folder_path = os.path.join('./results', setting)
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
@@ -345,17 +355,22 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         print('mse:{}, mae:{}'.format(mse, mae))
         print('rmse:{}, mape:{}, mspe:{}'.format(rmse, mape, mspe))
 
-        f = open("result_long_term_forecast.txt", 'a')
-        f.write(setting + "  \n")
-        if self.args.data == 'PEMS':
-            f.write('mae:{}, mape:{}, rmse:{}'.format(mae, mape, rmse))
-        else:
-            f.write('mse:{}, mae:{}'.format(mse, mae))
-        f.write('\n')
-        f.write('\n')
-        f.close()
+        try:
+            with open("result_long_term_forecast.txt", 'a') as f:
+                f.write(setting + "  \n")
+                if self.args.data == 'PEMS':
+                    f.write('mae:{}, mape:{}, rmse:{}'.format(mae, mape, rmse))
+                else:
+                    f.write('mse:{}, mae:{}'.format(mse, mae))
+                f.write('\n')
+                f.write('\n')
+        except IOError as e:
+            print(f"警告: 无法写入结果文件: {e}")
 
-        np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe]))
-        np.save(folder_path + 'pred.npy', preds)
-        np.save(folder_path + 'true.npy', trues)
+        try:
+            np.save(os.path.join(folder_path, 'metrics.npy'), np.array([mae, mse, rmse, mape, mspe]))
+            np.save(os.path.join(folder_path, 'pred.npy'), preds)
+            np.save(os.path.join(folder_path, 'true.npy'), trues)
+        except Exception as e:
+            print(f"警告: 保存结果文件失败: {e}")
         return
